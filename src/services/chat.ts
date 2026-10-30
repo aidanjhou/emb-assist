@@ -72,8 +72,8 @@ export async function fetchChatStream(
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith(':')) continue;
 
-      if (trimmed.startsWith('data: ')) {
-        const dataStr = trimmed.slice(6).trim();
+      if (trimmed.startsWith('data:')) {
+        const dataStr = trimmed.slice(5).trim();
         if (dataStr === '[DONE]') return;
 
         try {
