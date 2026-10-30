@@ -3,19 +3,26 @@ export interface ChatMessageParam {
   content: string;
 }
 
+export interface StreamCallbacks {
+  onReasoning?: (chunk: string) => void; // 接收思维链 (DeepSeek-R1)
+  onContent: (chunk: string) => void;     // 接收正文回答
+}
+
 /**
- * 极简、清晰的 DeepSeek 官方 API 流式请求函数
+ * 支持 DeepSeek-R1 思维链与打字机效果的流式客户端
  * @param messages 历史对话数组
  * @param apiKey DeepSeek 开放平台 API Key
- * @param onChunk 每次收到打字机新字符时的回调
- * @param signal 用于中止生成的信号量 (可选)
+ * @param model 模型名称：'deepseek-reasoner' (含思维链) 或 'deepseek-chat' (标准)
+ * @param callbacks 流式回调接口
+ * @param signal 中止信号量
  */
 export async function fetchDeepSeekStream(
   messages: ChatMessageParam[],
   apiKey: string,
-  onChunk: (delta: string) => void,
+  model: 'deepseek-chat' | 'deepseek-reasoner' = 'deepseek-reasoner',
+  callbacks: StreamCallbacks,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<void> {
   if (!apiKey?.trim()) {
     throw new Error('请先配置 DeepSeek API Key');
   }
@@ -27,10 +34,10 @@ export async function fetchDeepSeekStream(
       Authorization: `Bearer ${apiKey.trim()}`,
     },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model,
       messages,
       stream: true,
-      temperature: 0.7,
+      // deepseek-reasoner 不支持自定义 temperature，保持默认即可
     }),
     signal,
   });
@@ -52,17 +59,15 @@ export async function fetchDeepSeekStream(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
-  let fullText = '';
   let buffer = '';
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
-    // 解码当前数据块并拼接到缓冲区
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
-    buffer = lines.pop() || ''; // 最后未换行的部分保留到下一轮
+    buffer = lines.pop() || '';
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -70,21 +75,26 @@ export async function fetchDeepSeekStream(
 
       if (trimmed.startsWith('data: ')) {
         const dataStr = trimmed.slice(6).trim();
-        if (dataStr === '[DONE]') return fullText;
+        if (dataStr === '[DONE]') return;
 
         try {
           const parsed = JSON.parse(dataStr);
-          const delta = parsed.choices?.[0]?.delta?.content;
+          const delta = parsed.choices?.[0]?.delta;
+
           if (delta) {
-            fullText += delta;
-            onChunk(delta); // 实时向组件推送新增字符
+            // 1. DeepSeek-R1 专属思维链字段
+            if (delta.reasoning_content && callbacks.onReasoning) {
+              callbacks.onReasoning(delta.reasoning_content);
+            }
+            // 2. 正文最终回答字段
+            if (delta.content && callbacks.onContent) {
+              callbacks.onContent(delta.content);
+            }
           }
         } catch {
-          // 忽略单行非 JSON 内容
+          // 忽略非 JSON 行
         }
       }
     }
   }
-
-  return fullText;
 }

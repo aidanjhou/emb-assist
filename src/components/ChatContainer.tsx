@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Square, Key, Check } from 'lucide-react';
+import { ArrowUp, Square, Key, Check, ChevronDown, ChevronRight, Brain } from 'lucide-react';
 import { MagicWandIcon } from '@/components/MagicWandIcon';
 import { fetchDeepSeekStream, ChatMessageParam } from '@/services/deepseek';
 
@@ -9,13 +9,55 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  reasoningContent?: string; // DeepSeek-R1 专属思维链
   error?: boolean;
+}
+
+// 独立的思维链折叠展示组件
+function ReasoningBlock({
+  reasoning,
+  isStreaming,
+}: {
+  reasoning: string;
+  isStreaming: boolean;
+}) {
+  const [expanded, setExpanded] = useState(isStreaming);
+
+  // 流式输出中若有新内容自动展开，生成完毕后用户可自由折叠
+  useEffect(() => {
+    if (isStreaming) setExpanded(true);
+  }, [isStreaming]);
+
+  if (!reasoning) return null;
+
+  return (
+    <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50/80 p-2.5 text-xs text-gray-600 transition-all">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between text-left font-medium text-gray-700 hover:text-gray-900"
+      >
+        <span className="flex items-center gap-1.5">
+          <Brain size={14} className={isStreaming ? 'animate-pulse text-blue-600' : 'text-gray-500'} />
+          <span>{isStreaming ? '正在深度思考...' : '已完成深度思考'}</span>
+        </span>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+
+      {expanded && (
+        <div className="mt-2 max-h-60 overflow-y-auto border-t border-gray-200/60 pt-2 font-mono text-[11.5px] leading-relaxed text-gray-500 whitespace-pre-wrap">
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ChatContainer() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [model, setModel] = useState<'deepseek-reasoner' | 'deepseek-chat'>('deepseek-reasoner');
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
 
@@ -23,7 +65,6 @@ export function ChatContainer() {
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // 初始化加载 API Key (优先环境变量，其次 localStorage)
   useEffect(() => {
     const envKey = process.env.NEXT_PUBLIC_DEEPSEEK_API_KEY || '';
     const localKey = localStorage.getItem('deepseek_api_key') || '';
@@ -35,7 +76,6 @@ export function ChatContainer() {
     localStorage.setItem('deepseek_api_key', newKey.trim());
   };
 
-  // 自适应输入框高度
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     if (textareaRef.current) {
@@ -44,7 +84,6 @@ export function ChatContainer() {
     }
   };
 
-  // 发送消息核心逻辑 (对接真实 DeepSeek 流式 API)
   const handleSend = async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -58,9 +97,8 @@ export function ChatContainer() {
     const botMsgId = `b_${Date.now()}`;
 
     const userMsg: Message = { id: userMsgId, role: 'user', content: text };
-    const initialBotMsg: Message = { id: botMsgId, role: 'assistant', content: '' };
+    const initialBotMsg: Message = { id: botMsgId, role: 'assistant', content: '', reasoningContent: '' };
 
-    // 1. 立即更新界面：追加用户消息与空白助手消息
     setMessages((prev) => [...prev, userMsg, initialBotMsg]);
     setInput('');
     setIsStreaming(true);
@@ -69,7 +107,6 @@ export function ChatContainer() {
       textareaRef.current.style.height = 'auto';
     }
 
-    // 构造发送给模型的上下文
     const historyPayload: ChatMessageParam[] = [...messages, userMsg].map((m) => ({
       role: m.role,
       content: m.content,
@@ -82,11 +119,26 @@ export function ChatContainer() {
       await fetchDeepSeekStream(
         historyPayload,
         apiKey,
-        (delta) => {
-          // 收到新字符，实时更新最后一条助手消息
-          setMessages((prev) =>
-            prev.map((msg) => (msg.id === botMsgId ? { ...msg, content: msg.content + delta } : msg))
-          );
+        model,
+        {
+          // 1. 接收思维链 (R1)
+          onReasoning: (chunk) => {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId
+                  ? { ...msg, reasoningContent: (msg.reasoningContent || '') + chunk }
+                  : msg
+              )
+            );
+          },
+          // 2. 接收正文回答 (打字机效果)
+          onContent: (chunk) => {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId ? { ...msg, content: msg.content + chunk } : msg
+              )
+            );
+          },
         },
         controller.signal
       );
@@ -105,7 +157,6 @@ export function ChatContainer() {
     }
   };
 
-  // 中止生成
   const handleStop = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -129,8 +180,19 @@ export function ChatContainer() {
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-white">
-      {/* 极简右上角 Key 设置入口 */}
+      {/* 极简右上角设置区：切换模型与配置 Key */}
       <div className="absolute right-5 top-4 z-20 flex items-center gap-2">
+        {/* 模型切换胶囊 */}
+        <select
+          value={model}
+          onChange={(e) => setModel(e.target.value as 'deepseek-reasoner' | 'deepseek-chat')}
+          className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 shadow-sm outline-none transition hover:border-gray-300"
+        >
+          <option value="deepseek-reasoner">DeepSeek-R1 (深度思考 / 思维链)</option>
+          <option value="deepseek-chat">DeepSeek-V3 (快速标准对话)</option>
+        </select>
+
+        {/* API Key 设置入口 */}
         {showKeyInput ? (
           <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 shadow-sm">
             <Key size={14} className="text-gray-400" />
@@ -139,7 +201,7 @@ export function ChatContainer() {
               value={apiKey}
               onChange={(e) => saveApiKey(e.target.value)}
               placeholder="输入 DeepSeek API Key (sk-...)"
-              className="w-56 bg-transparent text-xs text-gray-800 outline-none"
+              className="w-52 bg-transparent text-xs text-gray-800 outline-none"
               autoFocus
             />
             <button
@@ -157,7 +219,7 @@ export function ChatContainer() {
             title="配置 API Key"
           >
             <Key size={13} className={apiKey ? 'text-blue-600' : 'text-gray-400'} />
-            <span>{apiKey ? 'Key 已配置' : '配置 Key'}</span>
+            <span>{apiKey ? 'Key 已就绪' : '配置 Key'}</span>
           </button>
         )}
       </div>
@@ -165,7 +227,7 @@ export function ChatContainer() {
       {/* 主体交互区域 */}
       <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden w-full">
         {!hasMessages ? (
-          /* 初始居中状态：魔棒与问候语 + 大圆角输入卡片 */
+          /* 初始居中状态 */
           <div className="flex w-full max-w-[740px] flex-col items-center justify-center px-5 -mt-10">
             <div className="mb-6 flex items-center justify-center gap-3 text-center">
               <MagicWandIcon size={32} />
@@ -181,7 +243,7 @@ export function ChatContainer() {
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder="给智能助手发送消息..."
+                placeholder="向 DeepSeek 发送提问测试思维链与打字机效果..."
                 rows={2}
                 className="w-full resize-none border-none bg-transparent p-0 text-[15px] leading-relaxed text-gray-900 outline-none placeholder:text-gray-400"
               />
@@ -217,7 +279,7 @@ export function ChatContainer() {
         ) : (
           /* 对话进行中状态：消息流 + 底部输入卡片 */
           <div className="flex h-full w-full max-w-[740px] flex-col px-5">
-            <div className="flex flex-1 flex-col gap-5 overflow-y-auto py-6">
+            <div className="flex flex-1 flex-col gap-6 overflow-y-auto py-6">
               {messages.map((msg) => (
                 <div
                   key={msg.id}
@@ -226,7 +288,7 @@ export function ChatContainer() {
                   }`}
                 >
                   {msg.role === 'assistant' && (
-                    <div className="mt-0.5 shrink-0">
+                    <div className="mt-1 shrink-0">
                       <MagicWandIcon size={24} />
                     </div>
                   )}
@@ -237,12 +299,21 @@ export function ChatContainer() {
                         ? 'rounded-xl bg-gray-100 px-3.5 py-2.5 text-gray-900'
                         : msg.error
                         ? 'rounded-xl bg-red-50 px-3.5 py-2.5 text-red-600 border border-red-200'
-                        : 'px-1 py-1 text-gray-900'
+                        : 'w-full px-1 py-1 text-gray-900'
                     }`}
                   >
+                    {/* 思维链独立折叠展示 */}
+                    {msg.role === 'assistant' && msg.reasoningContent && (
+                      <ReasoningBlock
+                        reasoning={msg.reasoningContent}
+                        isStreaming={isStreaming && !msg.content}
+                      />
+                    )}
+
+                    {/* 正文打字机展示 */}
                     {msg.content}
-                    {isStreaming && msg.role === 'assistant' && !msg.content && (
-                      <span className="inline-block animate-pulse text-gray-400">正在思考...</span>
+                    {isStreaming && msg.role === 'assistant' && !msg.content && !msg.reasoningContent && (
+                      <span className="inline-block animate-pulse text-gray-400 text-sm">正在连接模型...</span>
                     )}
                   </div>
                 </div>
@@ -250,7 +321,7 @@ export function ChatContainer() {
               <div ref={chatBottomRef} />
             </div>
 
-            {/* 底部输入卡片 */}
+            {/* 底部悬浮输入卡片 */}
             <div className="w-full bg-white pb-6 pt-3">
               <div className="w-full rounded-[22px] border border-gray-200 bg-white p-[16px_18px_12px_18px] shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all focus-within:border-gray-300">
                 <textarea
@@ -258,7 +329,7 @@ export function ChatContainer() {
                   value={input}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
-                  placeholder="给智能助手发送消息..."
+                  placeholder="发送消息..."
                   rows={1}
                   className="w-full resize-none border-none bg-transparent p-0 text-[15px] leading-relaxed text-gray-900 outline-none placeholder:text-gray-400"
                 />
