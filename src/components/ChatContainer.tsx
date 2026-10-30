@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Square, Key, Check, ChevronDown, ChevronRight, Brain } from 'lucide-react';
+import { ArrowUp, Square, ChevronDown, ChevronRight, Brain } from 'lucide-react';
 import { MagicWandIcon } from '@/components/MagicWandIcon';
-import { fetchDeepSeekStream, ChatMessageParam } from '@/services/deepseek';
+import { fetchChatStream, ChatMessageParam } from '@/services/chat';
 
 export interface Message {
   id: string;
@@ -56,25 +56,11 @@ function ReasoningBlock({
 export function ChatContainer() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState<'deepseek-reasoner' | 'deepseek-chat'>('deepseek-reasoner');
-  const [showKeyInput, setShowKeyInput] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    const envKey = process.env.NEXT_PUBLIC_DEEPSEEK_API_KEY || '';
-    const localKey = localStorage.getItem('deepseek_api_key') || '';
-    setApiKey(localKey || envKey);
-  }, []);
-
-  const saveApiKey = (newKey: string) => {
-    setApiKey(newKey);
-    localStorage.setItem('deepseek_api_key', newKey.trim());
-  };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -87,11 +73,6 @@ export function ChatContainer() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
-
-    if (!apiKey.trim()) {
-      setShowKeyInput(true);
-      return;
-    }
 
     const userMsgId = `u_${Date.now()}`;
     const botMsgId = `b_${Date.now()}`;
@@ -116,10 +97,9 @@ export function ChatContainer() {
     abortControllerRef.current = controller;
 
     try {
-      await fetchDeepSeekStream(
+      await fetchChatStream(
         historyPayload,
-        apiKey,
-        model,
+        '',
         {
           // 1. 接收思维链 (R1)
           onReasoning: (chunk) => {
@@ -180,48 +160,18 @@ export function ChatContainer() {
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-white">
-      {/* 极简右上角设置区：切换模型与配置 Key */}
+      {/* 极简右上角：后端服务状态指示 */}
       <div className="absolute right-5 top-4 z-20 flex items-center gap-2">
-        {/* 模型切换胶囊 */}
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value as 'deepseek-reasoner' | 'deepseek-chat')}
-          className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 shadow-sm outline-none transition hover:border-gray-300"
+        <div
+          className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-600 shadow-sm"
+          title="已连接至后端服务"
         >
-          <option value="deepseek-reasoner">DeepSeek-R1 (深度思考 / 思维链)</option>
-          <option value="deepseek-chat">DeepSeek-V3 (快速标准对话)</option>
-        </select>
-
-        {/* API Key 设置入口 */}
-        {showKeyInput ? (
-          <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 shadow-sm">
-            <Key size={14} className="text-gray-400" />
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => saveApiKey(e.target.value)}
-              placeholder="输入 DeepSeek API Key (sk-...)"
-              className="w-52 bg-transparent text-xs text-gray-800 outline-none"
-              autoFocus
-            />
-            <button
-              onClick={() => setShowKeyInput(false)}
-              className="text-gray-500 hover:text-gray-800"
-              title="完成"
-            >
-              <Check size={14} />
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setShowKeyInput(true)}
-            className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-500 shadow-sm transition hover:border-gray-300 hover:text-gray-800"
-            title="配置 API Key"
-          >
-            <Key size={13} className={apiKey ? 'text-blue-600' : 'text-gray-400'} />
-            <span>{apiKey ? 'Key 已就绪' : '配置 Key'}</span>
-          </button>
-        )}
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
+          </span>
+          <span className="text-[11.5px] font-medium text-gray-600">后端已连接</span>
+        </div>
       </div>
 
       {/* 主体交互区域 */}
